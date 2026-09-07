@@ -1,9 +1,10 @@
 {
   "domain": "netatmo_local_presets",
   "name": "Netatmo Local Presets",
-  "codeowners": [],
+  "codeowners": ["@mlyczko"],
   "config_flow": false,
-  "documentation": "https://www.home-assistant.io/integrations/climate/",
+  "documentation": "https://github.com/mlyczko/netatmo-local-presets",
+  "issue_tracker": "https://github.com/mlyczko/netatmo-local-presets/issues",
   "iot_class": "local_push",
   "requirements": [],
   "version": "1.0.0"
