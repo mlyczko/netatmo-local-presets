@@ -9,8 +9,7 @@
               "schedule": "mdi:calendar-clock",
               "away": "mdi:bag-suitcase",
               "frost_guard": "mdi:snowflake",
-              "boost": "mdi:rocket-launch",
-              "manual": "mdi:hand-back-right"
+              "boost": "mdi:rocket-launch"
             }
           }
         }
