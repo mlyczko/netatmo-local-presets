@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add Netatmo Local Presets",
+        "description": "Pick the local climate entity to wrap (e.g. the entity created by homekit_controller for your Netatmo thermostat) and a name for this device.",
+        "data": {
+          "source": "Source climate entity",
+          "name": "Name"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This climate entity is already configured."
+    }
+  }
+}

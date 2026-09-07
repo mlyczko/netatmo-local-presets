@@ -2,10 +2,10 @@
   "domain": "netatmo_local_presets",
   "name": "Netatmo Local Presets",
   "codeowners": ["@mlyczko"],
-  "config_flow": false,
+  "config_flow": true,
   "documentation": "https://github.com/mlyczko/netatmo-local-presets",
   "issue_tracker": "https://github.com/mlyczko/netatmo-local-presets/issues",
   "iot_class": "local_push",
   "requirements": [],
-  "version": "1.1.0"
+  "version": "2.0.0"
 }

@@ -10,6 +10,11 @@ Every action this entity performs is a normal Home Assistant
 the wrapped entity, so it never talks to Netatmo's servers and needs no
 Netatmo account or credentials.
 
+All temperatures, the boost duration and the day/night window are read
+live from a shared `PresetStore`, which the companion `number`/`time`
+entities (on the same device) read and write - see Settings -> Devices &
+Services for that device to adjust them.
+
 Important limitation: Netatmo's actual weekly heating *schedule* is
 calculated on the relay/cloud side and is not exposed locally at all. The
 "Schedule" preset here (hvac mode "auto") instead follows a simple
@@ -19,21 +24,16 @@ day/night temperature split that this integration manages itself.
 from __future__ import annotations
 
 from datetime import time, timedelta
-import logging
-
-import voluptuous as vol
-
-from homeassistant.util import dt as dt_util
 
 from homeassistant.components.climate import (
-    PLATFORM_SCHEMA as CLIMATE_PLATFORM_SCHEMA,
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
 )
-from homeassistant.const import ATTR_TEMPERATURE, CONF_NAME, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TEMPERATURE, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
     async_call_later,
@@ -41,79 +41,25 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.util import dt as dt_util
 
-_LOGGER = logging.getLogger(__name__)
-
-CONF_SOURCE = "source"
-CONF_AWAY_TEMPERATURE = "away_temperature"
-CONF_AWAY_TEMPERATURE_ENTITY = "away_temperature_entity"
-CONF_FROST_GUARD_TEMPERATURE = "frost_guard_temperature"
-CONF_FROST_GUARD_TEMPERATURE_ENTITY = "frost_guard_temperature_entity"
-CONF_BOOST_TEMPERATURE = "boost_temperature"
-CONF_BOOST_TEMPERATURE_ENTITY = "boost_temperature_entity"
-CONF_BOOST_DURATION = "boost_duration"
-CONF_DAY_TEMPERATURE = "day_temperature"
-CONF_DAY_TEMPERATURE_ENTITY = "day_temperature_entity"
-CONF_NIGHT_TEMPERATURE = "night_temperature"
-CONF_NIGHT_TEMPERATURE_ENTITY = "night_temperature_entity"
-CONF_NIGHT_START = "night_start"
-CONF_NIGHT_START_ENTITY = "night_start_entity"
-CONF_NIGHT_END = "night_end"
-CONF_NIGHT_END_ENTITY = "night_end_entity"
+from .const import CONF_SOURCE, DOMAIN
+from .store import PresetStore
 
 PRESET_SCHEDULE = "schedule"
 PRESET_AWAY = "away"
 PRESET_FROST_GUARD = "frost_guard"
 PRESET_BOOST = "boost"
 
+PRESET_STORE_FIELD = {
+    PRESET_AWAY: "away_temperature",
+    PRESET_FROST_GUARD: "frost_guard_temperature",
+    PRESET_BOOST: "boost_temperature",
+}
+
 ATTR_BOOST_END = "boost_end"
 
-DEFAULT_NAME = "Netatmo Local Thermostat"
-DEFAULT_AWAY_TEMPERATURE = 12.0
-DEFAULT_FROST_GUARD_TEMPERATURE = 7.0
-DEFAULT_BOOST_TEMPERATURE = 30.0
-DEFAULT_BOOST_DURATION = timedelta(minutes=30)
-DEFAULT_DAY_TEMPERATURE = 19.0
-DEFAULT_NIGHT_TEMPERATURE = 16.0
-DEFAULT_NIGHT_START = time(22, 0)
-DEFAULT_NIGHT_END = time(6, 0)
-
 AUTO_CHECK_INTERVAL = timedelta(minutes=1)
-
-PLATFORM_SCHEMA = CLIMATE_PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_SOURCE): cv.entity_id,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(
-            CONF_AWAY_TEMPERATURE, default=DEFAULT_AWAY_TEMPERATURE
-        ): vol.Coerce(float),
-        vol.Optional(CONF_AWAY_TEMPERATURE_ENTITY): cv.entity_id,
-        vol.Optional(
-            CONF_FROST_GUARD_TEMPERATURE, default=DEFAULT_FROST_GUARD_TEMPERATURE
-        ): vol.Coerce(float),
-        vol.Optional(CONF_FROST_GUARD_TEMPERATURE_ENTITY): cv.entity_id,
-        vol.Optional(
-            CONF_BOOST_TEMPERATURE, default=DEFAULT_BOOST_TEMPERATURE
-        ): vol.Coerce(float),
-        vol.Optional(CONF_BOOST_TEMPERATURE_ENTITY): cv.entity_id,
-        vol.Optional(
-            CONF_BOOST_DURATION, default=DEFAULT_BOOST_DURATION
-        ): cv.time_period,
-        vol.Optional(
-            CONF_DAY_TEMPERATURE, default=DEFAULT_DAY_TEMPERATURE
-        ): vol.Coerce(float),
-        vol.Optional(CONF_DAY_TEMPERATURE_ENTITY): cv.entity_id,
-        vol.Optional(
-            CONF_NIGHT_TEMPERATURE, default=DEFAULT_NIGHT_TEMPERATURE
-        ): vol.Coerce(float),
-        vol.Optional(CONF_NIGHT_TEMPERATURE_ENTITY): cv.entity_id,
-        vol.Optional(CONF_NIGHT_START, default=DEFAULT_NIGHT_START): cv.time,
-        vol.Optional(CONF_NIGHT_START_ENTITY): cv.entity_id,
-        vol.Optional(CONF_NIGHT_END, default=DEFAULT_NIGHT_END): cv.time,
-        vol.Optional(CONF_NIGHT_END_ENTITY): cv.entity_id,
-    }
-)
 
 
 def _time_in_window(now: time, start: time, end: time) -> bool:
@@ -125,35 +71,20 @@ def _time_in_window(now: time, start: time, end: time) -> bool:
     return now >= start or now < end
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the Netatmo Local Presets climate entity from YAML."""
+    """Set up the Netatmo Local Presets climate entity from a config entry."""
+    store: PresetStore = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             NetatmoLocalPresetClimate(
-                source_entity_id=config[CONF_SOURCE],
-                name=config[CONF_NAME],
-                away_temperature=config[CONF_AWAY_TEMPERATURE],
-                away_temperature_entity=config.get(CONF_AWAY_TEMPERATURE_ENTITY),
-                frost_guard_temperature=config[CONF_FROST_GUARD_TEMPERATURE],
-                frost_guard_temperature_entity=config.get(
-                    CONF_FROST_GUARD_TEMPERATURE_ENTITY
-                ),
-                boost_temperature=config[CONF_BOOST_TEMPERATURE],
-                boost_temperature_entity=config.get(CONF_BOOST_TEMPERATURE_ENTITY),
-                boost_duration=config[CONF_BOOST_DURATION],
-                day_temperature=config[CONF_DAY_TEMPERATURE],
-                day_temperature_entity=config.get(CONF_DAY_TEMPERATURE_ENTITY),
-                night_temperature=config[CONF_NIGHT_TEMPERATURE],
-                night_temperature_entity=config.get(CONF_NIGHT_TEMPERATURE_ENTITY),
-                night_start=config[CONF_NIGHT_START],
-                night_start_entity=config.get(CONF_NIGHT_START_ENTITY),
-                night_end=config[CONF_NIGHT_END],
-                night_end_entity=config.get(CONF_NIGHT_END_ENTITY),
+                entry=entry,
+                store=store,
+                source_entity_id=entry.data[CONF_SOURCE],
+                name=entry.title,
             )
         ]
     )
@@ -178,55 +109,20 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
 
     def __init__(
         self,
+        entry: ConfigEntry,
+        store: PresetStore,
         source_entity_id: str,
         name: str,
-        away_temperature: float,
-        away_temperature_entity: str | None,
-        frost_guard_temperature: float,
-        frost_guard_temperature_entity: str | None,
-        boost_temperature: float,
-        boost_temperature_entity: str | None,
-        boost_duration: timedelta,
-        day_temperature: float,
-        day_temperature_entity: str | None,
-        night_temperature: float,
-        night_temperature_entity: str | None,
-        night_start: time,
-        night_start_entity: str | None,
-        night_end: time,
-        night_end_entity: str | None,
     ) -> None:
+        self._store = store
         self._source_entity_id = source_entity_id
         self._attr_name = name
-        self._attr_unique_id = f"netatmo_local_presets_{source_entity_id}"
-
-        # Each "setting" is a (static_default, optional_helper_entity_id) pair.
-        # Pointing the *_entity option at an `input_number`/`input_datetime`
-        # (or `number`/`time`) helper lets these be adjusted live from the
-        # Home Assistant UI, no YAML edits or restarts required.
-        self._preset_temperatures = {
-            PRESET_AWAY: (away_temperature, away_temperature_entity),
-            PRESET_FROST_GUARD: (frost_guard_temperature, frost_guard_temperature_entity),
-            PRESET_BOOST: (boost_temperature, boost_temperature_entity),
-        }
-        self._day_temperature = (day_temperature, day_temperature_entity)
-        self._night_temperature = (night_temperature, night_temperature_entity)
-        self._night_start = (night_start, night_start_entity)
-        self._night_end = (night_end, night_end_entity)
-        self._boost_duration = boost_duration
-
-        self._aux_entity_ids = sorted(
-            {
-                entity_id
-                for _, entity_id in (
-                    *self._preset_temperatures.values(),
-                    self._day_temperature,
-                    self._night_temperature,
-                    self._night_start,
-                    self._night_end,
-                )
-                if entity_id is not None
-            }
+        self._attr_unique_id = entry.entry_id
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=name,
+            manufacturer="Netatmo Local Presets",
+            model="Local preset wrapper",
         )
 
         self._attr_preset_mode = PRESET_SCHEDULE
@@ -277,12 +173,7 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
                 self.hass, [self._source_entity_id], self._handle_source_change
             )
         )
-        if self._aux_entity_ids:
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.hass, self._aux_entity_ids, self._handle_aux_change
-                )
-            )
+        self.async_on_remove(self._store.add_listener(self._handle_store_change))
         self.async_on_remove(self._stop_auto_scheduler)
 
     @callback
@@ -291,8 +182,8 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
 
     @callback
-    def _handle_aux_change(self, event: Event[EventStateChangedData]) -> None:
-        """React to a helper entity (temperature/night window) changing."""
+    def _handle_store_change(self) -> None:
+        """React to a number/time entity (temperature/night window) changing."""
         self.hass.async_create_task(self._async_reapply_current_mode())
 
     @callback
@@ -345,9 +236,10 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
                 if self._attr_preset_mode != PRESET_BOOST
                 else PRESET_SCHEDULE
             )
-            self._boost_end = dt_util.utcnow() + self._boost_duration
+            boost_duration = timedelta(minutes=self._store.boost_duration_minutes)
+            self._boost_end = dt_util.utcnow() + boost_duration
             self._cancel_boost_timer = async_call_later(
-                self.hass, self._boost_duration, self._async_boost_finished
+                self.hass, boost_duration, self._async_boost_finished
             )
         else:
             self._boost_end = None
@@ -393,7 +285,7 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
         await self._async_apply_auto_temperature()
 
     async def _async_reapply_current_mode(self) -> None:
-        """Re-push the current preset/auto temperature after a helper changes."""
+        """Re-push the current preset/auto temperature after a store change."""
         if self._attr_hvac_mode == HVACMode.AUTO:
             await self._async_apply_auto_temperature()
             return
@@ -404,44 +296,17 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
 
     async def _async_apply_auto_temperature(self) -> None:
         """Push the day or night setpoint, whichever currently applies."""
-        night_start = self._resolve_time(*self._night_start)
-        night_end = self._resolve_time(*self._night_end)
         now = dt_util.as_local(dt_util.utcnow()).time()
-        setting = (
-            self._night_temperature
-            if _time_in_window(now, night_start, night_end)
-            else self._day_temperature
-        )
-        temperature = self._resolve_temperature(*setting)
+        is_night = _time_in_window(now, self._store.night_start, self._store.night_end)
+        temperature = self._store.night_temperature if is_night else self._store.day_temperature
         if temperature != self._attr_target_temperature:
             await self._async_call_source_set_temperature(temperature)
 
     def _preset_temperature_value(self, preset_mode: str) -> float | None:
-        setting = self._preset_temperatures.get(preset_mode)
-        if setting is None:
+        field = PRESET_STORE_FIELD.get(preset_mode)
+        if field is None:
             return None
-        return self._resolve_temperature(*setting)
-
-    def _resolve_temperature(self, static_value: float, entity_id: str | None) -> float:
-        """Return the live value of a helper entity, falling back to the default."""
-        if entity_id is not None:
-            state = self.hass.states.get(entity_id)
-            if state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                try:
-                    return float(state.state)
-                except ValueError:
-                    _LOGGER.warning("Ignoring non-numeric state of %s", entity_id)
-        return static_value
-
-    def _resolve_time(self, static_value: time, entity_id: str | None) -> time:
-        """Return the live value of a time helper entity, falling back to the default."""
-        if entity_id is not None:
-            state = self.hass.states.get(entity_id)
-            if state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                parsed = dt_util.parse_time(state.state)
-                if parsed is not None:
-                    return parsed
-        return static_value
+        return getattr(self._store, field)
 
     async def _async_forward_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Forward on/off to the source entity (it has no concept of "auto")."""
