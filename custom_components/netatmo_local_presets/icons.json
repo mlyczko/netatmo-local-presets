@@ -1,0 +1,20 @@
+{
+  "entity": {
+    "climate": {
+      "netatmo_local_presets": {
+        "state_attributes": {
+          "preset_mode": {
+            "default": "mdi:thermostat",
+            "state": {
+              "schedule": "mdi:calendar-clock",
+              "away": "mdi:bag-suitcase",
+              "frost_guard": "mdi:snowflake",
+              "boost": "mdi:rocket-launch",
+              "manual": "mdi:hand-back-right"
+            }
+          }
+        }
+      }
+    }
+  }
+}
