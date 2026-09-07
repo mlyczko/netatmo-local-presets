@@ -114,7 +114,7 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_temperature_unit = "°C"
     _attr_translation_key = "netatmo_local_presets"
-    _attr_hvac_modes = [HVACMode.HEAT, HVACMode.OFF]
+    _attr_hvac_modes = [HVACMode.HEAT, HVACMode.AUTO, HVACMode.OFF]
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.PRESET_MODE
     )
@@ -202,7 +202,10 @@ class NetatmoLocalPresetClimate(ClimateEntity, RestoreEntity):
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
 
-        self._attr_hvac_mode = HVACMode.HEAT if state.state == "heat" else HVACMode.OFF
+        if state.state in (HVACMode.HEAT, HVACMode.AUTO):
+            self._attr_hvac_mode = HVACMode(state.state)
+        else:
+            self._attr_hvac_mode = HVACMode.OFF
         self._attr_current_temperature = state.attributes.get("current_temperature")
 
         target = state.attributes.get(ATTR_TEMPERATURE)
